@@ -4,6 +4,93 @@ DECLARE @max_rows_to_return BIGINT
 SET @culture_info = 'en'
 SET @max_rows_to_return = 1000
 
+
+
+SELECT hicv.[ComputerName]                                                                                    AS 'Computer Name',
+			CASE
+               WHEN d.[DeviceNumber] IN (SELECT cd.[DeviceNumber]
+                                         FROM   [AllDevices_Assessment].[CategorizedDevices] cd
+                                         WHERE  [IsVirtual] = 1) THEN 'Virtual'
+               ELSE 'Physical'
+             END                                                                                                    AS 'Machine Type',
+			'' AS "Operated By",
+			'' AS Environment, 
+			Model																									AS 'System Model',
+			SiteName,
+             s.[Name]                                                                                               AS 'SQL Server Instance Name',
+             [Common].[GetSqlVersionDisplayString](sdv.[VersionCoalesce], @culture_info)                            AS 'SQL Server Product Name',
+             sdv.[VersionCoalesce]                                                                                  AS 'SQL Server Version',
+             [SqlServer_Reporting].[ConvertToSpLevel](sdv.[Splevel])                                                AS 'SQL Server Service Pack',
+             COALESCE([SqlServer_Reporting].[_GetSqlEditionDisplayString](sdv.[Skuname], @culture_info), 'Unknown') AS 'SQL Server Edition',
+            [Collation]																								AS 'Collation',
+			 case WHEN [SqlServer_Reporting].[ConvertToYesOrNo](sdv.[Clustered], @culture_info) = 'No'
+					THEN 0
+					ELSE 1
+						END                              AS 'Clustered?',
+             sdv.[Vsname]                                                                                           AS 'SQL Server Cluster Network Name',
+             s.[State]                                                                                              AS 'SQL Service State',
+             s.[StartMode]                                                                                          AS 'SQL Service Start Mode',
+			 (SELECT count(x.[DeviceNumber])
+				FROM [SqlServer_Reporting].[SqlDbinstanceDatabasesView] x
+			    WHERE  x.[DeviceNumber] = d.[DeviceNumber])															AS 'Number Of Databases',
+             hicv.[CurrentOperatingSystem]                                                                          AS 'Current Operating System',
+             CASE
+               WHEN d.[OsArchitecture] IS NULL THEN
+                 CASE
+                   WHEN d.[OsCaption] LIKE '%64%' THEN '64-bit'
+                   ELSE '32-bit'
+                 END
+               ELSE d.[OsArchitecture]
+             END                                                                                                    AS 'Operating System Architecture Type',
+             [AllDevices_Assessment].[_GetPhysicalProcessorCount](d.[DeviceNumber])                                 AS 'Number of Processors',
+             CASE 
+				WHEN [AllDevices_Assessment].[_GetPhysicalCoreCount](d.[DeviceNumber])  IS NULL 
+				THEN  [AllDevices_Assessment].[_GetPhysicalProcessorCount](d.[DeviceNumber]) 
+				ELSE  [AllDevices_Assessment].[_GetPhysicalCoreCount](d.[DeviceNumber]) END                                  AS 'Number of Total Cores',
+             [AllDevices_Assessment].[_GetLogicalProcessorCount](d.[DeviceNumber])                                  AS 'Number of Logical Processors',
+             (SELECT DISTINCT( ( ( LTRIM(p.[Name]) ) + ', ' + LTRIM(p.[DataWidth]) ) + ' bit' + CHAR(10) ) AS [text()]
+              FROM   [Win_Inventory].[Processors] AS p
+              WHERE  p.[DeviceNumber] = d.[DeviceNumber]
+              FOR XML PATH (''))                                                                                    AS 'CPU',
+             CAST (CAST(d.[TotalPhysicalMemory] AS BIGINT) / 1024 / 1024 AS NVARCHAR(256))                          AS 'System Memory (MB)',
+             (SELECT LTRIM(COALESCE(ld.[Caption], 'N/A')) + CHAR(10) AS [text()]
+              FROM   [Win_Inventory].[LogicalDisks] AS ld
+              WHERE  ld.[DeviceNumber] = d.[DeviceNumber]
+              ORDER  BY ld.[Caption]
+              FOR XML PATH (''))                                                                                    AS 'Logical Disk Drive Name',
+			  (SELECT sum(ld1.[Size]) / 1024 / 1024 / 1024 
+              FROM   [Win_Inventory].[LogicalDisks] AS ld1
+              WHERE  ld1.[DeviceNumber] = d.[DeviceNumber]
+              FOR XML PATH (''))                                                                                    AS 'Logical Disk Size (GB)',
+			 (SELECT sum(ld2.[FreeSpace]) / 1024 / 1024 / 1024 
+              FROM   [Win_Inventory].[LogicalDisks] AS ld2
+              WHERE  ld2.[DeviceNumber] = d.[DeviceNumber]
+              FOR XML PATH (''))																					AS 'Logical Disk Free Space (GB)',
+			floor(NULLIF(stat.[SuccessfullAttempts],0)/Cast(stat.[TotalAttempts] as decimal(18,0))  * 100) SuccessPercent,
+			ROUND(paa.[CpuPercentagePercentile], 2)                                    AS [ProcUtil],
+			(paa.[TotalBytes] - paa.[AvailableBytesPercentile]) / (1024 * 1024 * 1024) AS [MemoryUtil],
+			ROUND(paa.[NetBytesPerSecPercentile] / (1024 * 1024), 2)                   AS [NetworkUtil],
+			ROUND(paa.[DiskIopsPercentile], 2)                                         AS [DiskIOPS] 
+		FROM   [Core_Inventory].[Devices] d
+             INNER JOIN [SqlServer_Reporting].[SqlDbInstancesView] sdv
+               ON d.[DeviceNumber] = sdv.[DeviceNumber]
+             INNER JOIN [AllDevices_Assessment].[HardwareInventoryCoreView] hicv
+               ON d.[DeviceNumber] = hicv.[DeviceNumber]
+             LEFT OUTER JOIN [Win_Inventory].[Services] s
+               ON sdv.[DeviceNumber] = s.[DeviceNumber]
+                  AND RTRIM(sdv.[Servicename]) = RTRIM(s.[Name])
+             LEFT OUTER JOIN (SELECT hgd1.[DeviceNumber],
+                                     hgd1.[GuestDeviceNumber]
+                              FROM   [HyperV_Inventory].[HostGuestDetails] hgd1
+                                     INNER JOIN [Core_Assessment].[UniqueDevices] ud
+                                       ON hgd1.[DeviceNumber] = ud.[DeviceNumber]) hgd
+               ON d.[DeviceNumber] = hgd.[GuestDeviceNumber]
+			JOIN [Perf_Assessment].[Statistics] stat
+			 ON d.[DeviceNumber] = stat.[DeviceNumber]
+    LEFT OUTER JOIN [Perf_Assessment].[PerformanceAggregationAssessmentView] paa
+      ON paa.[DeviceNumber] = stat.[DeviceNumber] 
+
+
 --
 -- SQL INSTANCE REPORT
 --
@@ -427,6 +514,7 @@ SELECT hicv.[ComputerName]                                                      
 -- Consolidation target overview - servers with running instances 
 --
 
+
 SELECT distinct [Computer Name]
       ,[Machine Type]
       ,[Operated By]
@@ -447,158 +535,8 @@ SELECT distinct [Computer Name]
       ,[Current Operating System]
       ,[Operating System Architecture Type]
 	  ,count([SQL Server Instance Name]) as 'Number of SQL Instances'
-	  ,sum([Number Of Databases]) as [Number Of Databases]
-      ,[Number of Processors]
-      ,[Number of Total Cores]
-      ,[Number of Logical Processors]
-      ,[CPU]
-      ,[System Memory (MB)]
-	  ,cast(round(cast([System Memory (MB)] as decimal (18,2))/1024,0) as INT) as [System Memory (GB)]
-      --,[Logical Disk Drive Name]
-      ,[Logical Disk Size (GB)]
-      ,[Logical Disk Free Space (GB)]
-	  ,[Logical Disk Size (GB)]/1024 [Logical Disk Size (TB)]
-      ,[Logical Disk Free Space (GB)]/1024 [Logical Disk Free Space (TB)]
-      ,[SuccessPercent]
-      ,'' Description
-      ,[ProcUtil]
-      ,[MemoryUtil]
-      ,[NetworkUtil]
-      ,[DiskIOPS]
-  FROM (SELECT hicv.[ComputerName]                                                                                    AS 'Computer Name',
-			CASE
-               WHEN d.[DeviceNumber] IN (SELECT cd.[DeviceNumber]
-                                         FROM   [AllDevices_Assessment].[CategorizedDevices] cd
-                                         WHERE  [IsVirtual] = 1) THEN 'Virtual'
-               ELSE 'Physical'
-             END                                                                                                    AS 'Machine Type',
-			'' AS "Operated By",
-			'' AS Environment, 
-			Model																									AS 'System Model',
-			SiteName,
-             s.[Name]                                                                                               AS 'SQL Server Instance Name',
-             [Common].[GetSqlVersionDisplayString](sdv.[VersionCoalesce], @culture_info)                            AS 'SQL Server Product Name',
-             sdv.[VersionCoalesce]                                                                                  AS 'SQL Server Version',
-             [SqlServer_Reporting].[ConvertToSpLevel](sdv.[Splevel])                                                AS 'SQL Server Service Pack',
-             COALESCE([SqlServer_Reporting].[_GetSqlEditionDisplayString](sdv.[Skuname], @culture_info), 'Unknown') AS 'SQL Server Edition',
-            [Collation]																								AS 'Collation',
-			 case WHEN [SqlServer_Reporting].[ConvertToYesOrNo](sdv.[Clustered], @culture_info) = 'No'
-					THEN 0
-					ELSE 1
-						END                              AS 'Clustered?',
-             sdv.[Vsname]                                                                                           AS 'SQL Server Cluster Network Name',
-             s.[State]                                                                                              AS 'SQL Service State',
-             s.[StartMode]                                                                                          AS 'SQL Service Start Mode',
-			 (SELECT count(x.[DeviceNumber])
-				FROM [SqlServer_Reporting].[SqlDbinstanceDatabasesView] x
-			    WHERE  x.[DeviceNumber] = d.[DeviceNumber])															AS 'Number Of Databases',
-             hicv.[CurrentOperatingSystem]                                                                          AS 'Current Operating System',
-             CASE
-               WHEN d.[OsArchitecture] IS NULL THEN
-                 CASE
-                   WHEN d.[OsCaption] LIKE '%64%' THEN '64-bit'
-                   ELSE '32-bit'
-                 END
-               ELSE d.[OsArchitecture]
-             END                                                                                                    AS 'Operating System Architecture Type',
-             [AllDevices_Assessment].[_GetPhysicalProcessorCount](d.[DeviceNumber])                                 AS 'Number of Processors',
-             CASE 
-				WHEN [AllDevices_Assessment].[_GetPhysicalCoreCount](d.[DeviceNumber])  IS NULL 
-				THEN  [AllDevices_Assessment].[_GetPhysicalProcessorCount](d.[DeviceNumber]) 
-				ELSE  [AllDevices_Assessment].[_GetPhysicalCoreCount](d.[DeviceNumber]) END                                  AS 'Number of Total Cores',
-             [AllDevices_Assessment].[_GetLogicalProcessorCount](d.[DeviceNumber])                                  AS 'Number of Logical Processors',
-             (SELECT DISTINCT( ( ( LTRIM(p.[Name]) ) + ', ' + LTRIM(p.[DataWidth]) ) + ' bit' + CHAR(10) ) AS [text()]
-              FROM   [Win_Inventory].[Processors] AS p
-              WHERE  p.[DeviceNumber] = d.[DeviceNumber]
-              FOR XML PATH (''))                                                                                    AS 'CPU',
-             CAST (CAST(d.[TotalPhysicalMemory] AS BIGINT) / 1024 / 1024 AS NVARCHAR(256))                          AS 'System Memory (MB)',
-             (SELECT LTRIM(COALESCE(ld.[Caption], 'N/A')) + CHAR(10) AS [text()]
-              FROM   [Win_Inventory].[LogicalDisks] AS ld
-              WHERE  ld.[DeviceNumber] = d.[DeviceNumber]
-              ORDER  BY ld.[Caption]
-              FOR XML PATH (''))                                                                                    AS 'Logical Disk Drive Name',
-			  (SELECT sum(ld1.[Size]) / 1024 / 1024 / 1024 
-              FROM   [Win_Inventory].[LogicalDisks] AS ld1
-              WHERE  ld1.[DeviceNumber] = d.[DeviceNumber]
-              FOR XML PATH (''))                                                                                    AS 'Logical Disk Size (GB)',
-			 (SELECT sum(ld2.[FreeSpace]) / 1024 / 1024 / 1024 
-              FROM   [Win_Inventory].[LogicalDisks] AS ld2
-              WHERE  ld2.[DeviceNumber] = d.[DeviceNumber]
-              FOR XML PATH (''))																					AS 'Logical Disk Free Space (GB)',
-			floor(NULLIF(stat.[SuccessfullAttempts],0)/Cast(stat.[TotalAttempts] as decimal(18,0))  * 100) SuccessPercent,
-			ROUND(paa.[CpuPercentagePercentile], 2)                                    AS [ProcUtil],
-			(paa.[TotalBytes] - paa.[AvailableBytesPercentile]) / (1024 * 1024 * 1024) AS [MemoryUtil],
-			ROUND(paa.[NetBytesPerSecPercentile] / (1024 * 1024), 2)                   AS [NetworkUtil],
-			ROUND(paa.[DiskIopsPercentile], 2)                                         AS [DiskIOPS] 
-		FROM   [Core_Inventory].[Devices] d
-             INNER JOIN [SqlServer_Reporting].[SqlDbInstancesView] sdv
-               ON d.[DeviceNumber] = sdv.[DeviceNumber]
-             INNER JOIN [AllDevices_Assessment].[HardwareInventoryCoreView] hicv
-               ON d.[DeviceNumber] = hicv.[DeviceNumber]
-             LEFT OUTER JOIN [Win_Inventory].[Services] s
-               ON sdv.[DeviceNumber] = s.[DeviceNumber]
-                  AND RTRIM(sdv.[Servicename]) = RTRIM(s.[Name])
-             LEFT OUTER JOIN (SELECT hgd1.[DeviceNumber],
-                                     hgd1.[GuestDeviceNumber]
-                              FROM   [HyperV_Inventory].[HostGuestDetails] hgd1
-                                     INNER JOIN [Core_Assessment].[UniqueDevices] ud
-                                       ON hgd1.[DeviceNumber] = ud.[DeviceNumber]) hgd
-               ON d.[DeviceNumber] = hgd.[GuestDeviceNumber]
-			JOIN [Perf_Assessment].[Statistics] stat
-			 ON d.[DeviceNumber] = stat.[DeviceNumber]
-    LEFT OUTER JOIN [Perf_Assessment].[PerformanceAggregationAssessmentView] paa
-      ON paa.[DeviceNumber] = stat.[DeviceNumber] 
-) x
-  WHERE [SQL Service State] = 'Running'
-  group by 
-  [Computer Name]
-      ,[Machine Type]
-      ,[Operated By]
-      ,[Environment]
-      ,[System Model]
-      ,[SiteName]
-      ,[Current Operating System]
-      ,[Operating System Architecture Type]
-      ,[Number of Processors]
-      ,[Number of Total Cores]
-      ,[Number of Logical Processors]
-      ,[CPU]
-      ,[System Memory (MB)]
-      ,[Logical Disk Drive Name]
-      ,[Logical Disk Size (GB)]
-      ,[Logical Disk Free Space (GB)]
-      ,[SuccessPercent]
-      ,[ProcUtil]
-      ,[MemoryUtil]
-      ,[NetworkUtil]
-      ,[DiskIOPS]
-  order by 1
-
---
--- Consolidation target overview - servers with only stop instances (cluster resources)
---
-
-  
-SELECT distinct [Computer Name]
-      ,[Machine Type]
-      ,[Operated By]
-      ,[Environment]
-      ,[System Model]
-      ,[SiteName]
-      --,[SQL Server Instance Name]
-      --,[SQL Server Product Name]
-      --,[SQL Server Version]
-      --,[SQL Server Service Pack]
-      --,[SQL Server Edition]
-      --,[Collation]
-      ,sum([Clustered?]) [NumberOfClusteredInstances] 
-      --,[SQL Server Cluster Network Name]
-      --,[SQL Service State]
-      --,[SQL Service Start Mode]
-      --,[Number Of Databases]
-      ,[Current Operating System]
-      ,[Operating System Architecture Type]
-	  ,count([SQL Server Instance Name]) as 'Number of SQL Instances'
+	  ,sum([SQL Services Running]) as 'SQL Instances running'
+	  ,sum([SQL Services Stopped]) as 'SQL Instances stopped'  
 	  ,sum([Number Of Databases]) as [Number Of Databases]
       ,[Number of Processors]
       ,[Number of Total Cores]
@@ -640,7 +578,15 @@ SELECT distinct [Computer Name]
 						END                              AS 'Clustered?',
              sdv.[Vsname]                                                                                           AS 'SQL Server Cluster Network Name',
              s.[State]                                                                                              AS 'SQL Service State',
-             s.[StartMode]                                                                                          AS 'SQL Service Start Mode',
+			 CASE
+               WHEN s.[State] = 'Running' THEN 1
+			   ELSE 0
+			   END                                                                                             AS 'SQL Services Running',
+              CASE
+               WHEN s.[State] = 'Stopped' THEN 1
+			   ELSE 0
+			   END                                                                                             AS 'SQL Services Stopped',
+              s.[StartMode]                                                                                          AS 'SQL Service Start Mode',
 			 (SELECT count(x.[DeviceNumber])
 				FROM [SqlServer_Reporting].[SqlDbinstanceDatabasesView] x
 			    WHERE  x.[DeviceNumber] = d.[DeviceNumber])															AS 'Number Of Databases',
@@ -699,9 +645,8 @@ SELECT distinct [Computer Name]
 			JOIN [Perf_Assessment].[Statistics] stat
 			 ON d.[DeviceNumber] = stat.[DeviceNumber]
     LEFT OUTER JOIN [Perf_Assessment].[PerformanceAggregationAssessmentView] paa
-      ON paa.[DeviceNumber] = stat.[DeviceNumber] 
+      ON paa.[DeviceNumber] = stat.[DeviceNumber]  
 ) x
-  WHERE [SQL Service State] != 'Running'
   group by 
   [Computer Name]
       ,[Machine Type]
@@ -724,4 +669,167 @@ SELECT distinct [Computer Name]
       ,[MemoryUtil]
       ,[NetworkUtil]
       ,[DiskIOPS]
+  HAVING sum([SQL Services Running]) > 0
+  order by 1
+
+--
+-- Consolidation target overview - servers with only stop instances (cluster resources)
+--
+
+
+SELECT distinct [Computer Name]
+      ,[Machine Type]
+      ,[Operated By]
+      ,[Environment]
+      ,[System Model]
+      ,[SiteName]
+      --,[SQL Server Instance Name]
+      --,[SQL Server Product Name]
+      --,[SQL Server Version]
+      --,[SQL Server Service Pack]
+      --,[SQL Server Edition]
+      --,[Collation]
+      ,sum([Clustered?]) [NumberOfClusteredInstances] 
+      --,[SQL Server Cluster Network Name]
+      --,[SQL Service State]
+      --,[SQL Service Start Mode]
+      --,[Number Of Databases]
+      ,[Current Operating System]
+      ,[Operating System Architecture Type]
+	  ,count([SQL Server Instance Name]) as 'Number of SQL Instances'
+	  ,sum([SQL Services Running]) as 'SQL Instances running'
+	  ,sum([SQL Services Stopped]) as 'SQL Instances stopped'  
+	  ,sum([Number Of Databases]) as [Number Of Databases]
+      ,[Number of Processors]
+      ,[Number of Total Cores]
+      ,[Number of Logical Processors]
+      ,[CPU]
+      ,[System Memory (MB)]
+	  ,cast(round(cast([System Memory (MB)] as decimal (18,2))/1024,0) as INT) as [System Memory (GB)]
+      --,[Logical Disk Drive Name]
+      ,[Logical Disk Size (GB)]
+      ,[Logical Disk Free Space (GB)]
+	  ,[Logical Disk Size (GB)]/1024 [Logical Disk Size (TB)]
+      ,[Logical Disk Free Space (GB)]/1024 [Logical Disk Free Space (TB)]
+      ,[SuccessPercent]
+	  ,'' Description
+      ,[ProcUtil]
+      ,[MemoryUtil]
+      ,[NetworkUtil]
+      ,[DiskIOPS]
+  FROM (SELECT hicv.[ComputerName]                                                                                    AS 'Computer Name',
+			CASE
+               WHEN d.[DeviceNumber] IN (SELECT cd.[DeviceNumber]
+                                         FROM   [AllDevices_Assessment].[CategorizedDevices] cd
+                                         WHERE  [IsVirtual] = 1) THEN 'Virtual'
+               ELSE 'Physical'
+             END                                                                                                    AS 'Machine Type',
+			'' AS "Operated By",
+			'' AS Environment, 
+			Model																									AS 'System Model',
+			SiteName,
+             s.[Name]                                                                                               AS 'SQL Server Instance Name',
+             [Common].[GetSqlVersionDisplayString](sdv.[VersionCoalesce], @culture_info)                            AS 'SQL Server Product Name',
+             sdv.[VersionCoalesce]                                                                                  AS 'SQL Server Version',
+             [SqlServer_Reporting].[ConvertToSpLevel](sdv.[Splevel])                                                AS 'SQL Server Service Pack',
+             COALESCE([SqlServer_Reporting].[_GetSqlEditionDisplayString](sdv.[Skuname], @culture_info), 'Unknown') AS 'SQL Server Edition',
+            [Collation]																								AS 'Collation',
+			 case WHEN [SqlServer_Reporting].[ConvertToYesOrNo](sdv.[Clustered], @culture_info) = 'No'
+					THEN 0
+					ELSE 1
+						END                              AS 'Clustered?',
+             sdv.[Vsname]                                                                                           AS 'SQL Server Cluster Network Name',
+             s.[State]                                                                                              AS 'SQL Service State',
+			 CASE
+               WHEN s.[State] = 'Running' THEN 1
+			   ELSE 0
+			   END                                                                                             AS 'SQL Services Running',
+              CASE
+               WHEN s.[State] = 'Stopped' THEN 1
+			   ELSE 0
+			   END                                                                                             AS 'SQL Services Stopped',
+              s.[StartMode]                                                                                          AS 'SQL Service Start Mode',
+			 (SELECT count(x.[DeviceNumber])
+				FROM [SqlServer_Reporting].[SqlDbinstanceDatabasesView] x
+			    WHERE  x.[DeviceNumber] = d.[DeviceNumber])															AS 'Number Of Databases',
+             hicv.[CurrentOperatingSystem]                                                                          AS 'Current Operating System',
+             CASE
+               WHEN d.[OsArchitecture] IS NULL THEN
+                 CASE
+                   WHEN d.[OsCaption] LIKE '%64%' THEN '64-bit'
+                   ELSE '32-bit'
+                 END
+               ELSE d.[OsArchitecture]
+             END                                                                                                    AS 'Operating System Architecture Type',
+             [AllDevices_Assessment].[_GetPhysicalProcessorCount](d.[DeviceNumber])                                 AS 'Number of Processors',
+             CASE 
+				WHEN [AllDevices_Assessment].[_GetPhysicalCoreCount](d.[DeviceNumber])  IS NULL 
+				THEN  [AllDevices_Assessment].[_GetPhysicalProcessorCount](d.[DeviceNumber]) 
+				ELSE  [AllDevices_Assessment].[_GetPhysicalCoreCount](d.[DeviceNumber]) END                                  AS 'Number of Total Cores',
+             [AllDevices_Assessment].[_GetLogicalProcessorCount](d.[DeviceNumber])                                  AS 'Number of Logical Processors',
+             (SELECT DISTINCT( ( ( LTRIM(p.[Name]) ) + ', ' + LTRIM(p.[DataWidth]) ) + ' bit' + CHAR(10) ) AS [text()]
+              FROM   [Win_Inventory].[Processors] AS p
+              WHERE  p.[DeviceNumber] = d.[DeviceNumber]
+              FOR XML PATH (''))                                                                                    AS 'CPU',
+             CAST (CAST(d.[TotalPhysicalMemory] AS BIGINT) / 1024 / 1024 AS NVARCHAR(256))                          AS 'System Memory (MB)',
+             (SELECT LTRIM(COALESCE(ld.[Caption], 'N/A')) + CHAR(10) AS [text()]
+              FROM   [Win_Inventory].[LogicalDisks] AS ld
+              WHERE  ld.[DeviceNumber] = d.[DeviceNumber]
+              ORDER  BY ld.[Caption]
+              FOR XML PATH (''))                                                                                    AS 'Logical Disk Drive Name',
+			  (SELECT sum(ld1.[Size]) / 1024 / 1024 / 1024 
+              FROM   [Win_Inventory].[LogicalDisks] AS ld1
+              WHERE  ld1.[DeviceNumber] = d.[DeviceNumber]
+              FOR XML PATH (''))                                                                                    AS 'Logical Disk Size (GB)',
+			 (SELECT sum(ld2.[FreeSpace]) / 1024 / 1024 / 1024 
+              FROM   [Win_Inventory].[LogicalDisks] AS ld2
+              WHERE  ld2.[DeviceNumber] = d.[DeviceNumber]
+              FOR XML PATH (''))																					AS 'Logical Disk Free Space (GB)',
+			floor(NULLIF(stat.[SuccessfullAttempts],0)/Cast(stat.[TotalAttempts] as decimal(18,0))  * 100) SuccessPercent,
+			ROUND(paa.[CpuPercentagePercentile], 2)                                    AS [ProcUtil],
+			(paa.[TotalBytes] - paa.[AvailableBytesPercentile]) / (1024 * 1024 * 1024) AS [MemoryUtil],
+			ROUND(paa.[NetBytesPerSecPercentile] / (1024 * 1024), 2)                   AS [NetworkUtil],
+			ROUND(paa.[DiskIopsPercentile], 2)                                         AS [DiskIOPS] 
+		FROM   [Core_Inventory].[Devices] d
+             INNER JOIN [SqlServer_Reporting].[SqlDbInstancesView] sdv
+               ON d.[DeviceNumber] = sdv.[DeviceNumber]
+             INNER JOIN [AllDevices_Assessment].[HardwareInventoryCoreView] hicv
+               ON d.[DeviceNumber] = hicv.[DeviceNumber]
+             LEFT OUTER JOIN [Win_Inventory].[Services] s
+               ON sdv.[DeviceNumber] = s.[DeviceNumber]
+                  AND RTRIM(sdv.[Servicename]) = RTRIM(s.[Name])
+             LEFT OUTER JOIN (SELECT hgd1.[DeviceNumber],
+                                     hgd1.[GuestDeviceNumber]
+                              FROM   [HyperV_Inventory].[HostGuestDetails] hgd1
+                                     INNER JOIN [Core_Assessment].[UniqueDevices] ud
+                                       ON hgd1.[DeviceNumber] = ud.[DeviceNumber]) hgd
+               ON d.[DeviceNumber] = hgd.[GuestDeviceNumber]
+			JOIN [Perf_Assessment].[Statistics] stat
+			 ON d.[DeviceNumber] = stat.[DeviceNumber]
+    LEFT OUTER JOIN [Perf_Assessment].[PerformanceAggregationAssessmentView] paa
+      ON paa.[DeviceNumber] = stat.[DeviceNumber]  
+) x
+  group by 
+  [Computer Name]
+      ,[Machine Type]
+      ,[Operated By]
+      ,[Environment]
+      ,[System Model]
+      ,[SiteName]
+      ,[Current Operating System]
+      ,[Operating System Architecture Type]
+      ,[Number of Processors]
+      ,[Number of Total Cores]
+      ,[Number of Logical Processors]
+      ,[CPU]
+      ,[System Memory (MB)]
+      ,[Logical Disk Drive Name]
+      ,[Logical Disk Size (GB)]
+      ,[Logical Disk Free Space (GB)]
+      ,[SuccessPercent]
+      ,[ProcUtil]
+      ,[MemoryUtil]
+      ,[NetworkUtil]
+      ,[DiskIOPS]
+  HAVING sum([SQL Services Running]) = 0
   order by 1
