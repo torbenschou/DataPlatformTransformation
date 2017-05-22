@@ -27,7 +27,8 @@
   </PropertyGroup>
   <ItemGroup />
   <ItemGroup>
-    <Compile Include="Script.ps1" />
+    <Compile Include="CleanDownloadedVenderFiles.ps1" />
+    <Compile Include="ImportVenders.ps1" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <Target Name="Build" />
